@@ -1,0 +1,32 @@
+from pathlib import Path
+
+import pytest
+
+import typdiff
+
+FIXTURES = Path(__file__).parents[3] / "tests" / "fixtures"
+
+
+def test_diff():
+    old = (FIXTURES / "old.typ").read_text()
+    new = (FIXTURES / "new.typ").read_text()
+
+    output = typdiff.diff(old, new)
+
+    assert "#diff-deleted[Introduction]" in output
+    assert "#diff-added[Background]" in output
+    assert "#diff-deleted[Second]#diff-added[Third] item" in output
+
+
+@pytest.mark.parametrize("as_path", [str, Path])
+def test_diff_files(as_path):
+    output = typdiff.diff_files(as_path(FIXTURES / "old.typ"), as_path(FIXTURES / "new.typ"))
+
+    assert output == typdiff.diff(
+        (FIXTURES / "old.typ").read_text(), (FIXTURES / "new.typ").read_text()
+    )
+
+
+def test_diff_files_missing():
+    with pytest.raises(OSError):
+        typdiff.diff_files(str(FIXTURES / "does-not-exist.typ"), str(FIXTURES / "new.typ"))
