@@ -114,7 +114,21 @@ pip install typdiff
 import typdiff
 
 diff = typdiff.diff(old_source, new_source)  # from strings
-diff = typdiff.diff_files("old.typ", "new.typ")  # from file paths
+diff = typdiff.diff_files("old.typ", "new.typ")  # from file paths (str or Path)
+```
+
+### Producing a PDF
+
+Combine `typdiff` with [`typst`](https://pypi.org/project/typst/) (Python bindings for the Typst compiler, `pip install typst`) to go straight from two Typst files to a diff PDF, without shelling out to either CLI:
+
+```python
+import typdiff
+import typst
+
+diff = typdiff.diff_files("old.typ", "new.typ")
+# typst.compile() treats a str as a path and bytes as inline source, so
+# encode() is needed here to compile the diff text directly.
+pdf_bytes = typst.compile(diff.encode())
 ```
 
 ## Features

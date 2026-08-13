@@ -30,3 +30,13 @@ def test_diff_files(as_path):
 def test_diff_files_missing():
     with pytest.raises(OSError):
         typdiff.diff_files(str(FIXTURES / "does-not-exist.typ"), str(FIXTURES / "new.typ"))
+
+
+@pytest.mark.pdf
+def test_diff_compiles_to_pdf():
+    typst = pytest.importorskip("typst")
+
+    output = typdiff.diff_files(FIXTURES / "old.typ", FIXTURES / "new.typ")
+    pdf = typst.compile(output.encode())
+
+    assert pdf.startswith(b"%PDF-")
