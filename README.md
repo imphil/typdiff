@@ -98,6 +98,25 @@ typdiff old.typ new.typ -o diff.typ
 typdiff old.typ new.typ -o diff.typ && typst compile diff.typ
 ```
 
+## Python
+
+`typdiff` is also available as a Python package.
+
+### Installation
+
+```sh
+pip install typdiff
+```
+
+### Usage
+
+```python
+import typdiff
+
+diff = typdiff.diff(old_source, new_source)  # from strings
+diff = typdiff.diff_files("old.typ", "new.typ")  # from file paths
+```
+
 ## Features
 
 - **Block-level diffing** — Detects structural changes in headings, paragraphs, list items, enum items, and term list items
