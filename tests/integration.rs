@@ -2,6 +2,11 @@ use typdiff::diff::diff;
 use typdiff::parse::parse;
 use typdiff::render::render;
 
+/// True when the rendered output is syntactically valid Typst.
+fn parses(rendered: &str) -> bool {
+    !typst_syntax::parse(rendered).erroneous()
+}
+
 fn run_diff(old: &str, new: &str) -> String {
     let old_blocks: Vec<_> = parse(old)
         .into_iter()
@@ -211,6 +216,23 @@ fn test_existing_backslash_escape_is_not_double_escaped() {
         !output.contains("\\\\*") && !output.contains("\\\\["),
         "an existing escape must not be escaped a second time: {output}"
     );
+}
+
+#[test]
+fn test_escape_sequence_is_not_split_across_a_diff_call() {
+    // The diff boundary would otherwise fall inside `\]`, stranding the
+    // backslash at the end of the unchanged text where it escapes the `#` of
+    // the call that follows, printing "#diff-deleted[...]" as plain text.
+    let old = "\\[x\\] [grp]\n";
+    let new = "\\[x\\]\n";
+    let output = run_diff(old, new);
+
+    assert!(
+        !output.contains("\\#diff-deleted"),
+        "a stranded backslash must not escape the call: {output}"
+    );
+    assert!(output.contains("\\[x\\]#diff-deleted["), "output: {output}");
+    assert!(parses(&output), "output must compile: {output}");
 }
 
 #[test]
