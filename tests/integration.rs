@@ -214,6 +214,50 @@ fn test_existing_backslash_escape_is_not_double_escaped() {
 }
 
 #[test]
+fn test_deleted_bracket_split_from_its_closer_is_escaped() {
+    // Removing the "[x]" wrapper puts the deleted `[` and `]` in separate
+    // spans. A bare `[` would open a nested block closed by the renderer's own
+    // `]`, leaving the outer `#diff-deleted[...]` call unclosed.
+    let old = "Value [x] pairs.\n";
+    let new = "Value x pairs.\n";
+    let output = run_diff(old, new);
+
+    assert!(
+        output.contains("#diff-deleted[\\[]"),
+        "the split-off `[` should be escaped: {output}"
+    );
+}
+
+#[test]
+fn test_bracket_orphaned_in_unchanged_text_is_escaped() {
+    // Escaping the `[` that moved into a diff span leaves its `]` behind in
+    // unchanged text with nothing to pair with, which Typst rejects outright.
+    let old = "[ ] *bold*\n";
+    let new = "** \\[x\\] *bold*\n";
+    let output = run_diff(old, new);
+
+    assert!(
+        output.contains("\\] *bold*"),
+        "the orphaned `]` should be escaped: {output}"
+    );
+}
+
+#[test]
+fn test_content_block_split_across_spans_is_kept() {
+    // Here the brackets still pair up around the diff span, so they stay a
+    // content block rather than becoming literal text.
+    let old = "text [note] here\n";
+    let new = "text [other] here\n";
+    let output = run_diff(old, new);
+
+    assert!(
+        output.contains("text [#diff-deleted[note]") && output.contains("] here"),
+        "balanced brackets should be left alone: {output}"
+    );
+    assert!(!output.contains("\\["), "output: {output}");
+}
+
+#[test]
 fn test_indented_line_comment_does_not_split_paragraph() {
     let old = "First sentence.\n  // indented comment\nSecond sentence.\n";
     let new = "First sentence.\n  // indented comment\nSecond sentence changed.\n";

@@ -181,8 +181,9 @@ fn render_modified(kind: &BlockKind, spans: &[DiffSpan], out: &mut String) {
 
 /// Render diff spans with markup for deleted/inserted text.
 fn render_spans(spans: &[DiffSpan], out: &mut String) {
+    let stray_brackets = unbalanced_equal_brackets(spans);
     let mut prev_was_diff = false;
-    for span in spans {
+    for (i, span) in spans.iter().enumerate() {
         if span.text.is_empty() {
             continue;
         }
@@ -194,7 +195,7 @@ fn render_spans(spans: &[DiffSpan], out: &mut String) {
                 if prev_was_diff && (span.text.starts_with('(') || span.text.starts_with('[')) {
                     out.push('\u{200B}');
                 }
-                out.push_str(&span.text);
+                write_equal_text(&span.text, &stray_brackets[i], out);
                 prev_was_diff = false;
             }
             SpanTag::Deleted => {
@@ -237,8 +238,9 @@ fn write_enum_prefix(number: Option<usize>, out: &mut String) {
 
 /// Escape content so it can safely be placed inside a Typst content block `[...]`.
 ///
-/// - Tracks bracket depth so that balanced `[...]` pairs are left untouched.
-/// - Unbalanced `]` is escaped as `\]`.
+/// - Balanced `[...]` pairs are left untouched. An unbalanced `]` or `[` is
+///   escaped, since either one would unbalance the caller's own brackets and
+///   leave the `#diff-added[...]`/`#diff-deleted[...]` call unclosed.
 /// - Backslash escapes already in the source are passed through as-is, so an
 ///   escaped character is not escaped a second time.
 /// - If the content ends with an odd number of backslashes, a trailing space is
@@ -250,7 +252,10 @@ fn write_enum_prefix(number: Option<usize>, out: &mut String) {
 ///   unchanged because they are code arguments rather than content labels.
 fn escape_content(s: &str, escape_refs: bool) -> String {
     let mut result = String::with_capacity(s.len());
-    let mut depth: i32 = 0;
+    // Byte offsets in `result` of `[` characters pushed so far that have not
+    // yet been matched by a `]`. Any left over at the end get a `\` inserted
+    // in front of them, escaping them retroactively.
+    let mut unmatched_open_brackets: Vec<usize> = Vec::new();
     let mut chars = s.char_indices();
     while let Some((i, ch)) = chars.next() {
         match ch {
@@ -263,12 +268,11 @@ fn escape_content(s: &str, escape_refs: bool) -> String {
                 }
             }
             '[' => {
-                depth += 1;
+                unmatched_open_brackets.push(result.len());
                 result.push(ch);
             }
             ']' => {
-                if depth > 0 {
-                    depth -= 1;
+                if unmatched_open_brackets.pop().is_some() {
                     result.push(ch);
                 } else {
                     result.push('\\');
@@ -288,6 +292,11 @@ fn escape_content(s: &str, escape_refs: bool) -> String {
             _ => result.push(ch),
         }
     }
+    // Escape any `[` that never found a matching `]` within this span, in
+    // reverse order so earlier byte offsets stay valid as we insert.
+    for pos in unmatched_open_brackets.into_iter().rev() {
+        result.insert(pos, '\\');
+    }
     // If the result ends with an odd number of backslashes, the closing `]`
     // added by the caller would be interpreted as `\]` (an escaped bracket).
     // Append a space to break the escape sequence.
@@ -296,6 +305,65 @@ fn escape_content(s: &str, escape_refs: bool) -> String {
         result.push(' ');
     }
     result
+}
+
+/// Write unchanged text, escaping the brackets at the byte offsets in
+/// `brackets`.
+fn write_equal_text(text: &str, brackets: &[usize], out: &mut String) {
+    let mut chars = text.char_indices();
+    while let Some((i, ch)) = chars.next() {
+        match ch {
+            '\\' => {
+                out.push('\\');
+                if let Some((_, escaped)) = chars.next() {
+                    out.push(escaped);
+                }
+            }
+            '[' | ']' if brackets.binary_search(&i).is_ok() => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+}
+
+/// Byte offsets, per span, of brackets in unchanged text that nothing balances.
+/// The `[...]` of a `#diff-added[...]`/`#diff-deleted[...]` call cannot pair
+/// with them, so Typst would either report an unexpected closing bracket or
+/// swallow the rest of the block into a content block that never closes.
+fn unbalanced_equal_brackets(spans: &[DiffSpan]) -> Vec<Vec<usize>> {
+    let mut stray = vec![Vec::new(); spans.len()];
+    let mut open: Vec<(usize, usize)> = Vec::new();
+    for (i, span) in spans.iter().enumerate() {
+        if !matches!(span.tag, SpanTag::Equal) {
+            continue;
+        }
+        let mut chars = span.text.char_indices();
+        while let Some((j, ch)) = chars.next() {
+            match ch {
+                '\\' => {
+                    chars.next();
+                }
+                '[' => open.push((i, j)),
+                ']' => {
+                    // A `]` with no `[` before it in unchanged text is stray.
+                    let opener = open.pop();
+                    if opener.is_none() {
+                        stray[i].push(j);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for (i, j) in open {
+        stray[i].push(j);
+    }
+    for offsets in &mut stray {
+        offsets.sort_unstable();
+    }
+    stray
 }
 
 /// True when `label_start` points at the `<` in the first argument to `#ref(...)`.
@@ -326,6 +394,14 @@ mod tests {
     #[test]
     fn test_escape_content_unbalanced_bracket() {
         assert_eq!(escape_content("a ] b", false), "a \\] b");
+    }
+
+    #[test]
+    fn test_escape_content_unbalanced_open_bracket() {
+        // A lone `[` would open a nested block that swallows the closing `]`.
+        assert_eq!(escape_content("a [ b", false), "a \\[ b");
+        assert_eq!(escape_content("[", false), "\\[");
+        assert_eq!(escape_content("[a [b", false), "\\[a \\[b");
     }
 
     #[test]
