@@ -258,6 +258,31 @@ fn test_content_block_split_across_spans_is_kept() {
 }
 
 #[test]
+fn test_deleted_lone_asterisk_is_escaped() {
+    // The deleted "*" ends up alone in its span, touching only the wrapper's
+    // brackets, so nothing closes the emphasis it would open.
+    let old = "Rate is 5 * 3 apples.\n";
+    let new = "Rate is 5 x 3 apples.\n";
+    let output = run_diff(old, new);
+
+    assert!(output.contains("#diff-deleted[\\*]"), "output: {output}");
+}
+
+#[test]
+fn test_added_paragraph_keeps_bold_and_italic() {
+    // Emphasis that pairs up inside the span is real markup and must render as
+    // such, not be flattened into literal asterisks.
+    let old = "Intro.\n";
+    let new = "Intro.\n\nThis is *important* and _emphasized_.\n";
+    let output = run_diff(old, new);
+
+    assert!(
+        output.contains("#diff-added[This is *important* and _emphasized_.]"),
+        "self-contained emphasis should survive: {output}"
+    );
+}
+
+#[test]
 fn test_indented_line_comment_does_not_split_paragraph() {
     let old = "First sentence.\n  // indented comment\nSecond sentence.\n";
     let new = "First sentence.\n  // indented comment\nSecond sentence changed.\n";

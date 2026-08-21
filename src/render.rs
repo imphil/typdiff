@@ -241,6 +241,8 @@ fn write_enum_prefix(number: Option<usize>, out: &mut String) {
 /// - Balanced `[...]` pairs are left untouched. An unbalanced `]` or `[` is
 ///   escaped, since either one would unbalance the caller's own brackets and
 ///   leave the `#diff-added[...]`/`#diff-deleted[...]` call unclosed.
+/// - Emphasis markers (`*`/`_`) that would not pair up inside the block are
+///   escaped; see `escape_markup`.
 /// - Backslash escapes already in the source are passed through as-is, so an
 ///   escaped character is not escaped a second time.
 /// - If the content ends with an odd number of backslashes, a trailing space is
@@ -251,6 +253,21 @@ fn write_enum_prefix(number: Option<usize>, out: &mut String) {
 ///   create duplicates). Label literals inside `#ref(<label>, ...)` are left
 ///   unchanged because they are code arguments rather than content labels.
 fn escape_content(s: &str, escape_refs: bool) -> String {
+    let result = escape_markup(s, escape_refs, false);
+    // Whether the remaining `*`/`_` pair up is decided by Typst's recursive
+    // markup grammar, so let Typst's own parser judge rather than reimplement
+    // it. If it objects, fall back to keeping every marker that is not clearly
+    // literal literal, trading in-span bold/italic for a block that compiles.
+    if typst_syntax::parse(&format!("#diff-added[{result}]")).erroneous() {
+        escape_markup(s, escape_refs, true)
+    } else {
+        result
+    }
+}
+
+/// Escape `s` for use inside a content block. With `escape_markers`, every
+/// `*`/`_` that Typst would not treat as literal text is escaped too.
+fn escape_markup(s: &str, escape_refs: bool, escape_markers: bool) -> String {
     let mut result = String::with_capacity(s.len());
     // Byte offsets in `result` of `[` characters pushed so far that have not
     // yet been matched by a `]`. Any left over at the end get a `\` inserted
@@ -289,6 +306,10 @@ fn escape_content(s: &str, escape_refs: bool) -> String {
                 result.push('\\');
                 result.push('<');
             }
+            '*' | '_' if escape_markers && !is_word_adjacent_marker(s, i, ch) => {
+                result.push('\\');
+                result.push(ch);
+            }
             _ => result.push(ch),
         }
     }
@@ -305,6 +326,22 @@ fn escape_content(s: &str, escape_refs: bool) -> String {
         result.push(' ');
     }
     result
+}
+
+/// True when the `*`/`_` at byte offset `i` in `s` touches a word character on
+/// both sides, which is Typst's rule for such a marker being literal text
+/// rather than the start or end of emphasis. The ends of `s` never count, since
+/// the caller wraps the text in `[...]`.
+fn is_word_adjacent_marker(s: &str, i: usize, ch: char) -> bool {
+    let prev_word = s[..i]
+        .chars()
+        .next_back()
+        .is_some_and(char::is_alphanumeric);
+    let next_word = s[i + ch.len_utf8()..]
+        .chars()
+        .next()
+        .is_some_and(char::is_alphanumeric);
+    prev_word && next_word
 }
 
 /// Write unchanged text, escaping the brackets at the byte offsets in
@@ -410,6 +447,33 @@ mod tests {
         // back to Typst and close the caller's content block early.
         assert_eq!(escape_content("a \\] b", false), "a \\] b");
         assert_eq!(escape_content("\\[x", false), "\\[x");
+        assert_eq!(escape_content("\\*baz*", false), "\\*baz\\*");
+    }
+
+    #[test]
+    fn test_escape_content_unpaired_marker_is_escaped() {
+        // Nothing closes these, so they must not be left as emphasis markers.
+        assert_eq!(escape_content("*", false), "\\*");
+        assert_eq!(escape_content("_", false), "\\_");
+        // Word-adjacent on one side only, so Typst reads it as a marker.
+        assert_eq!(escape_content("word* ", false), "word\\* ");
+        assert_eq!(escape_content(" *word", false), " \\*word");
+    }
+
+    #[test]
+    fn test_escape_content_keeps_self_contained_emphasis() {
+        // The markers pair up inside the block, so the styling survives.
+        assert_eq!(escape_content("*bold*", false), "*bold*");
+        assert_eq!(escape_content("_it_ and *bold*", false), "_it_ and *bold*");
+        // Both neighbours are word characters, so this is literal text already.
+        assert_eq!(escape_content("in*side", false), "in*side");
+    }
+
+    #[test]
+    fn test_escape_content_unpaired_marker_forces_all_markers_literal() {
+        // `*bold*` alone would pair, but the stray `*` does not, so the whole
+        // span falls back to literal markers to keep the block closed.
+        assert_eq!(escape_content("*bold* and *", false), "\\*bold\\* and \\*");
     }
 
     #[test]
