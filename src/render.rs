@@ -181,21 +181,58 @@ fn render_modified(kind: &BlockKind, spans: &[DiffSpan], out: &mut String) {
 
 /// Render diff spans with markup for deleted/inserted text.
 fn render_spans(spans: &[DiffSpan], out: &mut String) {
+    let start = out.len();
+    write_spans(spans, out, false);
+    // `write_spans` judges each marker from its immediate neighbours, which
+    // cannot see markers pairing up across several spans. If it got one wrong
+    // the block no longer parses, so retry with every marker in unchanged text
+    // forced literal, keeping the retry only if it parses.
+    if typst_syntax::parse(&out[start..]).erroneous() {
+        let mut retry = out[..start].to_string();
+        write_spans(spans, &mut retry, true);
+        if !typst_syntax::parse(&retry[start..]).erroneous() {
+            *out = retry;
+        }
+    }
+}
+
+/// Write the spans. With `literal_markers`, every `*`/`_` in unchanged text is
+/// escaped rather than only the ones judged to have lost a word neighbour.
+fn write_spans(spans: &[DiffSpan], out: &mut String, literal_markers: bool) {
     let stray_brackets = unbalanced_equal_brackets(spans);
     let mut prev_was_diff = false;
+    // Whether the last unchanged text ended in a word character. Typst keeps
+    // `*`/`_` literal only between two word characters, so a wrapper written
+    // next to one can flip it into emphasis. See
+    // https://github.com/sou1118/typdiff/issues/18.
+    let mut word_before_diff_run = false;
     for (i, span) in spans.iter().enumerate() {
         if span.text.is_empty() {
             continue;
         }
         match span.tag {
             SpanTag::Equal => {
-                // After `#diff-added[...]` or `#diff-deleted[...]`, a `(` or `[`
-                // would be parsed as function arguments by Typst. Insert a
-                // zero-width space to break the call syntax.
-                if prev_was_diff && (span.text.starts_with('(') || span.text.starts_with('[')) {
-                    out.push('\u{200B}');
+                if prev_was_diff {
+                    if span.text.starts_with('(') || span.text.starts_with('[') {
+                        // After `#diff-added[...]` or `#diff-deleted[...]`, a `(`
+                        // or `[` would be parsed as function arguments by Typst.
+                        // Insert a zero-width space to break the call syntax.
+                        out.push('\u{200B}');
+                    } else if !literal_markers
+                        && word_before_diff_run
+                        && leading_marker_was_literal(&span.text, next_span_text(spans, i))
+                    {
+                        // The `]` just written replaced the word character on
+                        // the marker's left, so keep it literal explicitly.
+                        out.push('\\');
+                    }
                 }
-                write_equal_text(&span.text, &stray_brackets[i], out);
+                write_equal_text(&span.text, &stray_brackets[i], literal_markers, out);
+                word_before_diff_run = span
+                    .text
+                    .chars()
+                    .next_back()
+                    .is_some_and(char::is_alphanumeric);
                 prev_was_diff = false;
             }
             SpanTag::Deleted => {
@@ -204,6 +241,7 @@ fn render_spans(spans: &[DiffSpan], out: &mut String) {
                     // last actual output.
                     continue;
                 }
+                escape_dangling_marker(out, &span.text);
                 write!(out, "#diff-deleted[{}]", escape_content(&span.text, true)).unwrap();
                 prev_was_diff = true;
             }
@@ -213,6 +251,7 @@ fn render_spans(spans: &[DiffSpan], out: &mut String) {
                     prev_was_diff = false;
                     continue;
                 }
+                escape_dangling_marker(out, &span.text);
                 write!(out, "#diff-added[{}]", escape_content(&span.text, false)).unwrap();
                 prev_was_diff = true;
             }
@@ -345,8 +384,10 @@ fn is_word_adjacent_marker(s: &str, i: usize, ch: char) -> bool {
 }
 
 /// Write unchanged text, escaping the brackets at the byte offsets in
-/// `brackets`.
-fn write_equal_text(text: &str, brackets: &[usize], out: &mut String) {
+/// `brackets` and, with `literal_markers`, every `*`/`_` as well. A `\*`
+/// renders like the literal `*` it replaces, so the only cost of the latter is
+/// emphasis that really did span the block.
+fn write_equal_text(text: &str, brackets: &[usize], literal_markers: bool, out: &mut String) {
     let mut chars = text.char_indices();
     while let Some((i, ch)) = chars.next() {
         match ch {
@@ -360,8 +401,52 @@ fn write_equal_text(text: &str, brackets: &[usize], out: &mut String) {
                 out.push('\\');
                 out.push(ch);
             }
+            '*' | '_' if literal_markers => {
+                out.push('\\');
+                out.push(ch);
+            }
             _ => out.push(ch),
         }
+    }
+}
+
+/// The text of the next span that will be rendered, which is what followed the
+/// end of the current span in the source.
+fn next_span_text(spans: &[DiffSpan], i: usize) -> &str {
+    spans[i + 1..]
+        .iter()
+        .map(|s| s.text.as_str())
+        .find(|t| !t.is_empty())
+        .unwrap_or("")
+}
+
+/// True when `text` opens with a `*`/`_` that a word character followed in the
+/// source, i.e. one that was literal until whatever precedes it stopped being a
+/// word character. When the marker is all `text` holds, the character that
+/// followed it is the first one of the next span.
+fn leading_marker_was_literal(text: &str, next: &str) -> bool {
+    let mut chars = text.chars();
+    if !matches!(chars.next(), Some('*' | '_')) {
+        return false;
+    }
+    chars
+        .next()
+        .or_else(|| next.chars().next())
+        .is_some_and(char::is_alphanumeric)
+}
+
+/// Escape a `*`/`_` left at the end of `out` that was literal only because
+/// `next_text` starts with a word character: the diff wrapper about to be
+/// written replaces that neighbour with a `#`, opening emphasis instead.
+fn escape_dangling_marker(out: &mut String, next_text: &str) {
+    if !next_text.starts_with(char::is_alphanumeric) {
+        return;
+    }
+    let mut chars = out.chars();
+    if matches!(chars.next_back(), Some('*' | '_'))
+        && chars.next_back().is_some_and(char::is_alphanumeric)
+    {
+        out.insert(out.len() - 1, '\\');
     }
 }
 
@@ -607,6 +692,136 @@ mod tests {
         assert!(output.contains("<new-label>"));
         assert!(!output.contains("#diff-added[<new-label>]"));
         assert!(!output.contains("#diff-deleted[\\<old-label>]"));
+    }
+
+    #[test]
+    fn test_render_modified_escapes_asterisk_after_word_adjacent_diff_span() {
+        // "Tester*innen" -> "Tester\*innen": the '\' is inserted right before
+        // the pre-existing, previously word-adjacent (and thus literal) '*'.
+        let results = vec![DiffResult::Modified {
+            kind: BlockKind::Paragraph,
+            spans: vec![
+                DiffSpan {
+                    tag: SpanTag::Equal,
+                    text: "Tester".into(),
+                },
+                DiffSpan {
+                    tag: SpanTag::Inserted,
+                    text: "\\".into(),
+                },
+                DiffSpan {
+                    tag: SpanTag::Equal,
+                    text: "*innen".into(),
+                },
+            ],
+        }];
+        let output = render(&results);
+        assert!(
+            !output.contains("]*"),
+            "must not leave a bare '*' directly after a diff span's ']': {output}"
+        );
+        assert!(output.contains("\\*innen"), "output: {output}");
+    }
+
+    #[test]
+    fn test_render_modified_does_not_escape_asterisk_after_whitespace() {
+        // When the diff span is preceded by whitespace (not a word
+        // character), a following '*' was already a valid emphasis marker
+        // and must be left alone.
+        let results = vec![DiffResult::Modified {
+            kind: BlockKind::Paragraph,
+            spans: vec![
+                DiffSpan {
+                    tag: SpanTag::Equal,
+                    text: "Hello ".into(),
+                },
+                DiffSpan {
+                    tag: SpanTag::Deleted,
+                    text: "old".into(),
+                },
+                DiffSpan {
+                    tag: SpanTag::Equal,
+                    text: "*bold*".into(),
+                },
+            ],
+        }];
+        let output = render(&results);
+        assert!(output.contains("]*bold*"), "output: {output}");
+    }
+
+    #[test]
+    fn test_render_modified_keeps_closing_marker_after_diff_span() {
+        // "本" is a word character, so the trailing `*` was already a closing
+        // marker; escaping it would strip the opening `*` of its partner.
+        let results = vec![DiffResult::Modified {
+            kind: BlockKind::Paragraph,
+            spans: vec![
+                DiffSpan {
+                    tag: SpanTag::Equal,
+                    text: "*\u{65e5}\u{672c}".into(),
+                },
+                DiffSpan {
+                    tag: SpanTag::Inserted,
+                    text: "X".into(),
+                },
+                DiffSpan {
+                    tag: SpanTag::Equal,
+                    text: "* x".into(),
+                },
+            ],
+        }];
+        let output = render(&results);
+        assert!(output.contains("]* x"), "output: {output}");
+    }
+
+    #[test]
+    fn test_render_modified_escapes_marker_before_diff_span() {
+        // Mirror of the case above: the diff span replaces the word character
+        // on the marker's right, so the marker must be kept literal.
+        let results = vec![DiffResult::Modified {
+            kind: BlockKind::Paragraph,
+            spans: vec![
+                DiffSpan {
+                    tag: SpanTag::Equal,
+                    text: "Tester*".into(),
+                },
+                DiffSpan {
+                    tag: SpanTag::Deleted,
+                    text: "innen".into(),
+                },
+            ],
+        }];
+        let output = render(&results);
+        assert!(
+            output.contains("Tester\\*#diff-deleted["),
+            "output: {output}"
+        );
+    }
+
+    #[test]
+    fn test_render_modified_escapes_underscore_after_word_adjacent_diff_span() {
+        let results = vec![DiffResult::Modified {
+            kind: BlockKind::Paragraph,
+            spans: vec![
+                DiffSpan {
+                    tag: SpanTag::Equal,
+                    text: "foo".into(),
+                },
+                DiffSpan {
+                    tag: SpanTag::Deleted,
+                    text: "bar".into(),
+                },
+                DiffSpan {
+                    tag: SpanTag::Equal,
+                    text: "_baz_".into(),
+                },
+            ],
+        }];
+        let output = render(&results);
+        // Escaping only the leading `_` would leave the closing one unpaired,
+        // so the whole span falls back to literal markers.
+        assert!(!output.contains("]_"), "output: {output}");
+        assert!(output.contains("\\_baz\\_"), "output: {output}");
     }
 
     #[test]

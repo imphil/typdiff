@@ -283,6 +283,52 @@ fn test_added_paragraph_keeps_bold_and_italic() {
 }
 
 #[test]
+fn test_escaped_asterisk_after_word_does_not_break_emphasis_parsing() {
+    // Regression test for https://github.com/sou1118/typdiff/issues/18.
+    // The `*` in "Tester*innen" is literal only because a word character sits
+    // on each side. Inserting a `\` before it wraps the insertion in
+    // `#diff-added[...]`, replacing the left neighbour with `]`, so the
+    // renderer has to keep the `*` literal itself.
+    let old = "Tester*innen testen Tests.\n";
+    let new = "Tester\\*innen testen Tests.\n";
+    let output = run_diff(old, new);
+
+    assert!(
+        !output.contains("]*"),
+        "a bare '*' must not directly follow a diff span's closing ']': {output}"
+    );
+    assert!(output.contains("\\*innen"), "output: {output}");
+}
+
+#[test]
+fn test_closing_emphasis_marker_after_diff_span_is_left_alone() {
+    // The `*` closes emphasis opened earlier in the paragraph; escaping it
+    // would leave the opening `*` without a partner.
+    let old = "*\u{65e5}\u{672c}* x\n";
+    let new = "*\u{65e5}\u{672c}X* x\n";
+    let output = run_diff(old, new);
+
+    assert!(
+        output.contains("]* x"),
+        "a closing emphasis marker must stay a marker: {output}"
+    );
+}
+
+#[test]
+fn test_marker_before_diff_span_is_escaped() {
+    // Mirror of the "Tester*innen" case: here the diff span replaces the word
+    // character to the right of the `*`, so the `*` loses its literalness.
+    let old = "Tester*innen testen.\n";
+    let new = "Tester* testen.\n";
+    let output = run_diff(old, new);
+
+    assert!(
+        output.contains("Tester\\*#diff-deleted["),
+        "the `*` must be escaped once the word after it is deleted: {output}"
+    );
+}
+
+#[test]
 fn test_indented_line_comment_does_not_split_paragraph() {
     let old = "First sentence.\n  // indented comment\nSecond sentence.\n";
     let new = "First sentence.\n  // indented comment\nSecond sentence changed.\n";
