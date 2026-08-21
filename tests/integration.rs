@@ -236,6 +236,52 @@ fn test_escape_sequence_is_not_split_across_a_diff_call() {
 }
 
 #[test]
+fn test_raw_span_is_replaced_whole() {
+    // A diff call written between the backticks is printed as characters
+    // rather than run, since raw text is literal.
+    let old = "Walk at `ttIdx` until the `last_tile` bit.\n";
+    let new = "Walk at `tpIdx` until the `last` bit.\n";
+    let output = run_diff(old, new);
+
+    assert!(
+        output.contains("#diff-deleted[`ttIdx`]#diff-added[`tpIdx`]"),
+        "the raw span should be wrapped whole: {output}"
+    );
+    assert!(
+        output.contains("#diff-deleted[`last_tile`]#diff-added[`last`]"),
+        "output: {output}"
+    );
+}
+
+#[test]
+fn test_raw_content_is_not_escaped() {
+    // Inside backticks a `]` does not close the caller's content block and a
+    // backslash is not an escape, so escaping there both is needless and puts
+    // stray characters on the page.
+    let old = "Use `a]b` and `*` here.\n";
+    let new = "Use `zzz` and `*` here.\n";
+    let output = run_diff(old, new);
+
+    assert!(output.contains("#diff-deleted[`a]b`]"), "output: {output}");
+    assert!(!output.contains("\\]b"), "output: {output}");
+    assert!(!output.contains("\\*"), "output: {output}");
+}
+
+#[test]
+fn test_escaped_backtick_does_not_open_raw_text() {
+    // `` \` `` is a literal backtick. Reading it as an opening delimiter shifts
+    // every raw boundary after it and splits the next real raw span.
+    let old = "a \\` b `code` c\n";
+    let new = "a \\` b `xxxx` d\n";
+    let output = run_diff(old, new);
+
+    assert!(
+        output.contains("#diff-deleted[`code`]#diff-added[`xxxx`]"),
+        "the raw span after an escaped backtick must stay intact: {output}"
+    );
+}
+
+#[test]
 fn test_indented_line_comment_does_not_split_paragraph() {
     let old = "First sentence.\n  // indented comment\nSecond sentence.\n";
     let new = "First sentence.\n  // indented comment\nSecond sentence changed.\n";
