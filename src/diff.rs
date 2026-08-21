@@ -137,8 +137,8 @@ fn process_replace(old_range: &[Block], new_range: &[Block], results: &mut Vec<D
 /// individual single-character token.
 ///
 /// Typst code expressions (`#func[...]`, `#func(...)`), references (`@label`),
-/// and labels (`<label>`) are treated as atomic tokens so the diff never
-/// fragments valid Typst syntax.
+/// labels (`<label>`), and escape sequences are treated as atomic tokens so the
+/// diff never fragments valid Typst syntax.
 ///
 /// This gives word-level granularity for Latin text while allowing
 /// character-level precision for CJK text (which has no whitespace boundaries).
@@ -191,6 +191,16 @@ fn tokenize_mixed(s: &str) -> Vec<&str> {
                 } else {
                     break;
                 }
+            }
+            tokens.push(&s[start..i]);
+        } else if c == '\\' {
+            // An escape sequence is one unit. Split in half, the backslash is
+            // left escaping the diff call written next to it, and the
+            // character it guarded becomes loose markup.
+            let start = i;
+            i += c_len;
+            if i < s.len() {
+                i += s[i..].chars().next().unwrap().len_utf8();
             }
             tokens.push(&s[start..i]);
         } else if c == '<' {

@@ -2,6 +2,11 @@ use typdiff::diff::diff;
 use typdiff::parse::parse;
 use typdiff::render::render;
 
+/// True when the rendered output is syntactically valid Typst.
+fn parses(rendered: &str) -> bool {
+    !typst_syntax::parse(rendered).erroneous()
+}
+
 fn run_diff(old: &str, new: &str) -> String {
     let old_blocks: Vec<_> = parse(old)
         .into_iter()
@@ -232,14 +237,15 @@ fn test_deleted_bracket_split_from_its_closer_is_escaped() {
 fn test_bracket_orphaned_in_unchanged_text_is_escaped() {
     // Escaping the `[` that moved into a diff span leaves its `]` behind in
     // unchanged text with nothing to pair with, which Typst rejects outright.
-    let old = "[ ] *bold*\n";
-    let new = "** \\[x\\] *bold*\n";
+    let old = "[a] [b]\n";
+    let new = "[ [b]\n";
     let output = run_diff(old, new);
 
     assert!(
-        output.contains("\\] *bold*"),
-        "the orphaned `]` should be escaped: {output}"
+        output.contains("\\[#diff-deleted["),
+        "the orphaned `[` should be escaped: {output}"
     );
+    assert!(parses(&output), "output must compile: {output}");
 }
 
 #[test]
@@ -286,9 +292,8 @@ fn test_added_paragraph_keeps_bold_and_italic() {
 fn test_escaped_asterisk_after_word_does_not_break_emphasis_parsing() {
     // Regression test for https://github.com/sou1118/typdiff/issues/18.
     // The `*` in "Tester*innen" is literal only because a word character sits
-    // on each side. Inserting a `\` before it wraps the insertion in
-    // `#diff-added[...]`, replacing the left neighbour with `]`, so the
-    // renderer has to keep the `*` literal itself.
+    // on each side. Whichever side the diff call lands on, the `*` must not be
+    // left as a bare marker with nothing to pair with.
     let old = "Tester*innen testen Tests.\n";
     let new = "Tester\\*innen testen Tests.\n";
     let output = run_diff(old, new);
@@ -297,7 +302,7 @@ fn test_escaped_asterisk_after_word_does_not_break_emphasis_parsing() {
         !output.contains("]*"),
         "a bare '*' must not directly follow a diff span's closing ']': {output}"
     );
-    assert!(output.contains("\\*innen"), "output: {output}");
+    assert!(parses(&output), "output must compile: {output}");
 }
 
 #[test]
@@ -326,6 +331,22 @@ fn test_marker_before_diff_span_is_escaped() {
         output.contains("Tester\\*#diff-deleted["),
         "the `*` must be escaped once the word after it is deleted: {output}"
     );
+}
+
+#[test]
+fn test_escape_sequence_is_not_split_across_a_diff_call() {
+    // The diff boundary would otherwise fall inside `\]`, stranding the
+    // backslash at the end of the unchanged text where it escapes the `#` of
+    // the call that follows, printing "#diff-deleted[...]" as plain text.
+    let old = "\\[x\\] [grp]\n";
+    let new = "\\[x\\]\n";
+    let output = run_diff(old, new);
+
+    assert!(
+        !output.contains("\\#diff-deleted"),
+        "a stranded backslash must not escape the call: {output}"
+    );
+    assert!(output.contains("\\[x\\]#diff-deleted["), "output: {output}");
 }
 
 #[test]
