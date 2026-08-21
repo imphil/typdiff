@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use crate::{Block, BlockKind, DiffResult, DiffSpan, SpanTag, TypstLabel};
+use crate::{Block, BlockKind, DiffResult, DiffSpan, SpanTag, TypstLabel, TypstRaw};
 
 const PREAMBLE: &str = r##"#let diff-added(body) = {
   set text(fill: rgb("#0000ff"))
@@ -282,6 +282,8 @@ fn write_enum_prefix(number: Option<usize>, out: &mut String) {
 ///   leave the `#diff-added[...]`/`#diff-deleted[...]` call unclosed.
 /// - Emphasis markers (`*`/`_`) that would not pair up inside the block are
 ///   escaped; see `escape_markup`.
+/// - Raw text is copied through untouched, since none of the above is markup
+///   inside backticks.
 /// - Backslash escapes already in the source are passed through as-is, so an
 ///   escaped character is not escaped a second time.
 /// - If the content ends with an odd number of backslashes, a trailing space is
@@ -313,8 +315,27 @@ fn escape_markup(s: &str, escape_refs: bool, escape_markers: bool) -> String {
     // in front of them, escaping them retroactively.
     let mut unmatched_open_brackets: Vec<usize> = Vec::new();
     let mut chars = s.char_indices();
+    let mut skip_to = 0;
     while let Some((i, ch)) = chars.next() {
+        if i < skip_to {
+            continue;
+        }
         match ch {
+            // Raw text is literal all the way to its closing backticks, so
+            // nothing inside it needs escaping and escaping it would show the
+            // backslashes on the page.
+            '`' => match TypstRaw::end(&s[i..]) {
+                Some(end) => {
+                    result.push_str(&s[i..i + end]);
+                    skip_to = i + end;
+                }
+                // A backtick parted from its partner would open raw text that
+                // never closes, so keep it literal.
+                None => {
+                    result.push('\\');
+                    result.push(ch);
+                }
+            },
             // An escape sequence is already literal; copy it through whole so
             // the escaped character is not treated as markup below.
             '\\' => {
@@ -389,8 +410,27 @@ fn is_word_adjacent_marker(s: &str, i: usize, ch: char) -> bool {
 /// emphasis that really did span the block.
 fn write_equal_text(text: &str, brackets: &[usize], literal_markers: bool, out: &mut String) {
     let mut chars = text.char_indices();
+    let mut skip_to = 0;
     while let Some((i, ch)) = chars.next() {
+        if i < skip_to {
+            continue;
+        }
         match ch {
+            // Raw text is literal all the way to its closing backticks, so
+            // nothing inside it needs escaping and escaping it would show the
+            // backslashes on the page.
+            '`' => match TypstRaw::end(&text[i..]) {
+                Some(end) => {
+                    out.push_str(&text[i..i + end]);
+                    skip_to = i + end;
+                }
+                // A backtick parted from its partner would open raw text that
+                // never closes, so keep it literal.
+                None => {
+                    out.push('\\');
+                    out.push(ch);
+                }
+            },
             '\\' => {
                 out.push('\\');
                 if let Some((_, escaped)) = chars.next() {
@@ -462,8 +502,18 @@ fn unbalanced_equal_brackets(spans: &[DiffSpan]) -> Vec<Vec<usize>> {
             continue;
         }
         let mut chars = span.text.char_indices();
+        let mut skip_to = 0;
         while let Some((j, ch)) = chars.next() {
+            if j < skip_to {
+                continue;
+            }
             match ch {
+                // Brackets inside raw text are literal and pair with nothing.
+                '`' => {
+                    if let Some(end) = TypstRaw::end(&span.text[j..]) {
+                        skip_to = j + end;
+                    }
+                }
                 '\\' => {
                     chars.next();
                 }
